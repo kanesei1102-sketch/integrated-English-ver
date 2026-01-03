@@ -5,8 +5,11 @@ import matplotlib.pyplot as plt
 import io
 import datetime
 from scipy import stats
+try:
+    import scikit_posthocs as sp
+except ImportError:
+    sp = None
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
-import scikit_posthocs as sp
 
 # ---------------------------------------------------------
 # 0. Page Config
@@ -14,10 +17,9 @@ import scikit_posthocs as sp
 st.set_page_config(page_title="Ultimate Sci-Stat & Graph Engine", layout="wide")
 
 # ---------------------------------------------------------
-# 1. Sidebar Settings (Sidebar UI)
+# 1. Sidebar Settings
 # ---------------------------------------------------------
 with st.sidebar:
-    # --- Top: Notice ---
     st.markdown("### 【Notice】")
     st.info("""
     This tool is a beta version. If you plan to use results from this tool in your publications or conference presentations, **please contact the developer (Seiji Kaneko) in advance.**
@@ -28,30 +30,31 @@ with st.sidebar:
     """)
     st.divider()
 
-    # --- Middle: Graph Settings ---
-    st.header("🛠️ Graph Settings")
+    st.header("🛠️ Graph Configuration")
     
-    with st.expander("📈 Chart Type", expanded=True):
-        # Translated options
-        graph_type = st.selectbox("Format", ["Bar Plot", "Box Plot", "Violin Plot"])
-        
-        # Logic updated to match English labels
+    with st.expander("📈 Plot Type", expanded=True):
+        graph_type = st.selectbox("Style", ["Bar Plot", "Box Plot", "Violin Plot"])
         if "Bar" in graph_type:
-            error_type = st.radio("Error Bars", ["SD (Standard Deviation)", "SEM (Standard Error of the Mean)"])
+            error_type = st.radio("Error Bar", ["SD (Standard Deviation)", "SEM (Standard Error)"])
         else:
             error_type = "None"
         
-    with st.expander("🎨 Design Tweaks", expanded=True):
+    with st.expander("🎨 Layout & Appearance", expanded=True):
         fig_title = st.text_input("Figure Title", value="Experiment Result")
         y_axis_label = st.text_input("Y-axis Label", value="Relative Value")
         manual_y_max = st.number_input("Y-axis Max (0 for Auto)", value=0.0, step=1.0)
         
         st.divider()
-        st.caption("Plot Adjustments")
-        bar_width = st.slider("Bar/Box Width", 0.1, 1.0, 0.6)
+        st.caption("Spacing & Width")
+        
+        # English Labels for Sliders
+        group_spacing = st.slider("↔️ Group Spacing (X-axis)", 0.8, 3.0, 1.2, 0.1, help="Adjust the distance between groups.")
+        bar_width = st.slider("⬛ Box/Bar Width", 0.1, 1.5, 0.6, 0.1, help="Adjust the width of the bars/boxes.")
+        
+        st.caption("Dots & Dimensions")
         dot_size = st.slider("Dot Size", 0, 100, 20)
-        dot_alpha = st.slider("Dot Transparency", 0.1, 1.0, 0.7)
-        jitter_strength = st.slider("Jitter", 0.0, 0.2, 0.04, 0.01)
+        dot_alpha = st.slider("Dot Opacity", 0.1, 1.0, 0.7)
+        jitter_strength = st.slider("Jitter Strength", 0.0, 0.2, 0.04, 0.01)
         fig_height = st.slider("Figure Height", 3.0, 10.0, 5.0)
 
 # ---------------------------------------------------------
@@ -59,8 +62,7 @@ with st.sidebar:
 # ---------------------------------------------------------
 st.title("🔬 Ultimate Sci-Stat & Graph Engine")
 st.markdown("""
-**Integrated tool for automating statistical analysis to publication-quality graph creation (Pro Ver.)**
-Automatically diagnoses data properties, selects optimal tests, and instantly creates graphs with significance bars.
+**Automated Statistical Analysis & Scientific Graphing Tool (Pro Ver.)** Automatically diagnoses data properties (Normality/Homogeneity), selects the optimal statistical test, and generates publication-ready graphs with significance bars.
 """)
 
 st.subheader("1. Data Input")
@@ -68,15 +70,14 @@ tab_manual, tab_csv = st.tabs(["✍️ Manual Input", "📂 CSV Upload"])
 
 data_dict = {}
 
-# --- A. Manual Input Mode ---
+# --- Manual Input ---
 with tab_manual:
     if 'g_count' not in st.session_state: st.session_state.g_count = 3
-    
     col_ctrl, _ = st.columns([1, 5])
     with col_ctrl:
         c1, c2 = st.columns(2)
         if c1.button("＋ Add"): st.session_state.g_count += 1
-        if c2.button("－ Remove") and st.session_state.g_count > 2: st.session_state.g_count -= 1
+        if c2.button("－ Del") and st.session_state.g_count > 2: st.session_state.g_count -= 1
 
     cols = st.columns(min(st.session_state.g_count, 4))
     for i in range(st.session_state.g_count):
@@ -87,9 +88,9 @@ with tab_manual:
             vals = [float(x.strip()) for x in raw.replace(',', '\n').split('\n') if x.strip()]
             if len(vals) > 0: data_dict[name] = vals
 
-# --- B. CSV Upload Mode ---
+# --- CSV Upload ---
 with tab_csv:
-    uploaded_file = st.file_uploader("Upload CSV File (Columns: Group, Value)", type="csv")
+    uploaded_file = st.file_uploader("Upload CSV (Columns: Group, Value)", type="csv")
     if uploaded_file:
         try:
             df = pd.read_csv(uploaded_file)
@@ -100,26 +101,26 @@ with tab_csv:
                     g_vals = df[df[g_col] == g_name][v_col].dropna().tolist()
                     if len(g_vals) > 0:
                         data_dict[g_name] = g_vals
-                st.success(f"CSV Loaded Successfully: Detected {len(data_dict)} groups")
+                st.success(f"CSV Loaded Successfully: {len(data_dict)} groups detected")
             else:
-                st.error("CSV must have at least 2 columns (e.g., Column A: Group, Column B: Value)")
+                st.error("CSV must have at least 2 columns (e.g., Col A = Group Name, Col B = Values)")
         except Exception as e:
             st.error(f"Load Error: {e}")
 
 # ---------------------------------------------------------
-# 3. Sidebar Addition: Group Color Settings
+# 3. Group Color Settings
 # ---------------------------------------------------------
 group_colors = {}
 if data_dict:
     with st.sidebar:
-        with st.expander("🖍️ Group Color Settings", expanded=True):
+        with st.expander("🖍️ Color Settings", expanded=True):
             default_colors = ["#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F", "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC"]
             for i, g_name in enumerate(data_dict.keys()):
                 col_def = default_colors[i % len(default_colors)]
                 group_colors[g_name] = st.color_picker(f"{g_name} Color", col_def)
 
 # ---------------------------------------------------------
-# 4. Statistical Analysis Engine (Logic Core)
+# 4. Statistical Analysis Engine
 # ---------------------------------------------------------
 def get_sig_label(p):
     if p < 0.001: return "***"
@@ -134,32 +135,27 @@ if len(data_dict) >= 2:
     
     group_names = list(data_dict.keys())
     all_values = list(data_dict.values())
-    
-    # Diagnosis: Data Count Check
     valid_data_count = all(len(v) >= 2 for v in all_values)
     
     if not valid_data_count:
-        st.warning("Please enter at least two numerical values for each group.")
+        st.warning("Please input at least 2 numeric values per group.")
     else:
-        # Normality Diagnosis
+        # Normality & Homogeneity
         all_normal = True
         for v in all_values:
             if len(v) >= 3:
                 _, p_s = stats.shapiro(v)
                 if p_s <= 0.05: all_normal = False
-        
-        # Homogeneity of Variance Diagnosis
         try:
             _, p_lev = stats.levene(*all_values)
             is_equal_var = (p_lev > 0.05)
         except:
             is_equal_var = True
 
-        # Test Logic
+        # Test Selection Logic
         method_name = ""
         p_global = 1.0
         
-        # --- 2 Groups ---
         if len(data_dict) == 2:
             g1, g2 = all_values[0], all_values[1]
             if all_normal:
@@ -168,21 +164,16 @@ if len(data_dict) >= 2:
             else:
                 method_name = "Mann-Whitney U test"
                 _, p_global = stats.mannwhitneyu(g1, g2, alternative='two-sided')
-                
             if p_global < 0.05:
                 sig_pairs.append({'g1': group_names[0], 'g2': group_names[1], 'label': get_sig_label(p_global), 'p': p_global})
-
-        # --- 3 or more Groups ---
         else:
             if all_normal and is_equal_var:
                 method_name = "One-way ANOVA + Tukey's HSD"
                 _, p_global = stats.f_oneway(*all_values)
-                
                 if p_global < 0.05:
                     flat_data = [v for sub in all_values for v in sub]
                     labels = [n for n, sub in data_dict.items() for _ in sub]
                     res = pairwise_tukeyhsd(flat_data, labels)
-                    
                     df_res = pd.DataFrame(data=res._results_table.data[1:], columns=res._results_table.data[0])
                     for _, row in df_res.iterrows():
                         if row['reject']:
@@ -190,129 +181,136 @@ if len(data_dict) >= 2:
             else:
                 method_name = "Kruskal-Wallis + Dunn's test"
                 _, p_global = stats.kruskal(*all_values)
-                
-                if p_global < 0.05:
+                if p_global < 0.05 and sp is not None:
                     dunn = sp.posthoc_dunn(all_values, p_adjust='bonferroni')
                     dunn.columns = group_names
                     dunn.index = group_names
-                    
                     for i in range(len(group_names)):
                         for j in range(i+1, len(group_names)):
                             n1, n2 = group_names[i], group_names[j]
-                            p_val = dunn.loc[n1, n2]
-                            if p_val < 0.05:
-                                sig_pairs.append({'g1': n1, 'g2': n2, 'label': get_sig_label(p_val), 'p': p_val})
+                            if dunn.loc[n1, n2] < 0.05:
+                                sig_pairs.append({'g1': n1, 'g2': n2, 'label': get_sig_label(dunn.loc[n1, n2]), 'p': dunn.loc[n1, n2]})
 
-        # Generate Explanation (English)
+        # Report Text Generation
         if all_normal and is_equal_var:
-            easy_reason = "Data distribution was not skewed and variance was homogeneous, so the standard and high-power 'Parametric Test' was selected."
+            easy_reason = "Data distribution is normal and variances are equal. Selected the standard 'Parametric Test' for highest statistical power."
         elif not all_normal:
-            easy_reason = "Data showed extreme skewness or outliers, so a 'Non-parametric Test' (robust against outliers and based on rank) was selected."
+            easy_reason = "Data distribution is non-normal or contains outliers. Selected 'Non-Parametric Test' (Rank-based) for robustness."
         else:
-            easy_reason = "Significant difference in variance between groups was detected, so a method correcting for this difference was selected."
+            easy_reason = "Variances between groups are unequal. Selected a test with appropriate corrections (e.g., Welch's t-test)."
 
-        result_summary = "【Significant Difference Found】 A clear, non-random difference was found between groups." if p_global < 0.05 else "【No Significant Difference】 The observed difference is likely within the range of error."
+        result_summary = "【Significant】 A statistically significant difference was found between groups." if p_global < 0.05 else "【Not Significant】 No statistically significant difference was found."
 
-        # Display Report
-        st.success(f"**Adopted Method: {method_name}**")
-        
-        with st.expander("📝 Ready-to-use Report (Detail)", expanded=True):
+        analysis_path = f"""
+【Automated Diagnosis Process】
+1. Normality Check (Shapiro-Wilk): {"PASS (Normal)" if all_normal else "FAIL (Non-Normal)"}
+2. Homogeneity Check (Levene): {"PASS (Equal Var)" if is_equal_var else "FAIL (Unequal Var)"}
+⇒ Based on the above, the algorithm automatically selected: "{method_name}".
+"""
+        st.success(f"**Selected Method: {method_name}**")
+        with st.expander("📝 Formal Statistical Report (Copy & Paste)", expanded=True):
             full_report = f"""
-【Analysis Report: Comparison of {", ".join(group_names)}】
+【Statistical Analysis Report: Comparison of {", ".join(group_names)}】
 
-1. Purpose of Analysis:
-   Checked for statistically meaningful differences in the means of each group.
+{analysis_path}
 
-2. Method Selected (Reason):
-   Method: {method_name}
+1. Objective:
+   To determine if there is a statistically significant difference between the means of the groups.
+
+2. Methodology & Rationale:
+   Selected Test: {method_name}
    Reason: {easy_reason}
-   * The most scientifically valid procedure was selected after checking data normality and homoscedasticity.
+   (The test was chosen based on automated pre-checks for Normality and Homogeneity of variance.)
 
 3. Results:
-   Judgment: {result_summary}
+   Conclusion: {result_summary}
    Global P-value: {p_global:.4e}
-   (*If P < 0.05, it is judged as statistically significant*)
+   (P < 0.05 indicates statistical significance.)
 
-4. Post-hoc Comparisons:
-   {"Since there are 3+ groups, all pairs were compared using strict criteria." if len(data_dict) > 2 else "Two groups were directly compared."}
+4. Post-hoc Analysis (Multiple Comparisons):
+   {"Pairwise comparisons were conducted to identify specific group differences." if len(data_dict) > 2 else "Direct comparison between two groups was conducted."}
 
-5. Conclusion:
-   Statistical evidence was obtained. A graph with significance labels was created based on this content.
+5. Summary:
+   Based on the analysis, statistical evidence was obtained from the data. Significance labels have been automatically applied to the generated graph.
             """
-            st.text_area("Copy-Paste Report", value=full_report, height=350)
-
+            st.text_area("Report Output", value=full_report, height=450)
     st.divider()
 
 # ---------------------------------------------------------
-# 5. Graph Generation Engine (Visualization Core)
+# 5. Graph Generation Engine
 # ---------------------------------------------------------
 if len(data_dict) >= 1:
     st.header("3. Graph Generation (Auto-Labeling)")
-    
     try:
         plt.rcParams['font.family'] = 'sans-serif'
-        fig, ax = plt.subplots(figsize=(6, fig_height))
+        
+        # --- Layout Calculation ---
+        base_scale = 1.5
+        auto_width = max(6.0, len(data_dict) * base_scale * group_spacing)
+        
+        fig, ax = plt.subplots(figsize=(auto_width, fig_height))
         
         group_names = list(data_dict.keys())
-        x_positions = np.arange(len(group_names))
         
-        # Calculate Y-axis max (Safety)
+        # X positions based on spacing
+        x_positions = np.arange(len(group_names)) * group_spacing
+        
         all_vals_flat = [v for sub in data_dict.values() for v in sub if len(sub) > 0]
         max_val = np.max(all_vals_flat) if all_vals_flat else 1.0
         
-        # --- A. Plotting ---
+        # --- A. Plot Drawing ---
         for i, (name, vals) in enumerate(data_dict.items()):
             if len(vals) == 0: continue
             vals = np.array(vals)
+            pos = x_positions[i]
             
             mean_v = np.mean(vals)
             std_v = np.std(vals, ddof=1) if len(vals) > 1 else 0
             sem_v = std_v / np.sqrt(len(vals)) if len(vals) > 0 else 0
-            err = sem_v if error_type == "SEM (Standard Error of the Mean)" else std_v
-            
+            err = sem_v if error_type == "SEM" else std_v
             my_color = group_colors.get(name, "#333333")
 
             if "Bar" in graph_type:
-                ax.bar(i, mean_v, width=bar_width, color=my_color, edgecolor='black', alpha=0.8, zorder=1)
-                ax.errorbar(i, mean_v, yerr=err, fmt='none', color='black', capsize=5, zorder=2)
+                ax.bar(pos, mean_v, width=bar_width, color=my_color, edgecolor='black', alpha=0.8, zorder=1)
+                ax.errorbar(pos, mean_v, yerr=err, fmt='none', color='black', capsize=5, zorder=2)
             elif "Box" in graph_type:
-                ax.boxplot(vals, positions=[i], widths=bar_width, patch_artist=True,
+                ax.boxplot(vals, positions=[pos], widths=bar_width, patch_artist=True,
                            boxprops=dict(facecolor=my_color, alpha=0.8), medianprops=dict(color='black'), showfliers=False)
             elif "Violin" in graph_type:
-                parts = ax.violinplot(vals, positions=[i], widths=bar_width, showextrema=False)
+                parts = ax.violinplot(vals, positions=[pos], widths=bar_width, showextrema=False)
                 for pc in parts['bodies']:
-                    pc.set_facecolor(my_color)
-                    pc.set_alpha(0.8)
+                    pc.set_facecolor(my_color); pc.set_alpha(0.8)
             
             if dot_size > 0:
                 noise = np.random.normal(0, jitter_strength, len(vals))
-                ax.scatter(x_positions[i] + noise, vals, s=dot_size, color='white', edgecolor='gray', zorder=3, alpha=dot_alpha)
+                ax.scatter(pos + noise, vals, s=dot_size, color='white', edgecolor='gray', zorder=3, alpha=dot_alpha)
 
         # --- B. Significance Bars ---
         y_step = max_val * 0.15
-        current_y = max_val * 1.15 # Initial position slightly higher
+        current_y = max_val * 1.15
         
         for pair in sig_pairs:
             try:
                 idx1 = group_names.index(pair['g1'])
                 idx2 = group_names.index(pair['g2'])
-                x1, x2 = idx1, idx2
+                x1, x2 = x_positions[idx1], x_positions[idx2]
+                
                 bar_h = current_y
                 col_h = max_val * 0.03
-                
                 ax.plot([x1, x1, x2, x2], [bar_h-col_h, bar_h, bar_h, bar_h-col_h], lw=1.5, c='black')
                 ax.text((x1+x2)/2, bar_h, pair['label'], ha='center', va='bottom', fontsize=14)
-                
                 current_y += y_step
             except: pass
 
-        # --- C. Layout ---
+        # --- C. Axis Settings ---
         ax.set_xticks(x_positions)
         ax.set_xticklabels(group_names, fontsize=12)
         ax.set_ylabel(y_axis_label, fontsize=12)
         ax.set_title(fig_title, fontsize=14)
         
-        # Y-axis Range
+        margin = 0.8 * group_spacing
+        ax.set_xlim(min(x_positions) - margin, max(x_positions) + margin)
+
         if manual_y_max > 0:
             ax.set_ylim(0, manual_y_max)
         else:
@@ -322,21 +320,15 @@ if len(data_dict) >= 1:
         ax.spines['right'].set_visible(False)
         
         st.pyplot(fig)
-        
         img_buf = io.BytesIO()
         fig.savefig(img_buf, format='png', bbox_inches='tight', dpi=300)
         now_str = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        st.download_button("📥 Save Image (PNG)", data=img_buf, file_name=f"result_{now_str}.png", mime="image/png")
-        
+        st.download_button("📥 Download Image (PNG)", data=img_buf, file_name=f"result_{now_str}.png", mime="image/png")
     except Exception as e:
-        st.error(f"Rendering Error: {e}")
-
+        st.error(f"Plot Error: {e}")
 else:
     st.info("Please input data (Manual or CSV)")
 
-# ---------------------------------------------------------
-# 6. Sidebar Bottom: Disclaimer
-# ---------------------------------------------------------
 with st.sidebar:
     st.divider()
     st.caption("【Disclaimer】")
