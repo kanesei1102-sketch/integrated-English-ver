@@ -462,6 +462,11 @@ grouped_data = {}
 if analysis_mode.startswith("1-Factor"):
     st.caption("Compare multiple groups under a single condition.")
     t1, t2 = st.tabs(["✍️ Manual Input", "📂 CSV Upload"])
+    
+    
+    if 'csv_data_cache' not in st.session_state:
+        st.session_state.csv_data_cache = {}
+
     with t1:
         if 'g_cnt' not in st.session_state: st.session_state.g_cnt = 3
         c1, c2 = st.columns([1,5])
@@ -474,27 +479,53 @@ if analysis_mode.startswith("1-Factor"):
                 raw = st.text_area(f"Values {i+1}", key=f"d{i}")
                 v = parse_vals(raw); 
                 if v: data_dict[name] = v
+                
     with t2:
         up = st.file_uploader("CSV File", type="csv")
         if up:
             try:
                 df = pd.read_csv(up)
                 st.write("Preview:", df.head(3))
-                if st.radio("Format", ["Long Format", "Wide Format"]).startswith("Long"):
+                
+               
+                fmt = st.radio("Format", ["Long Format", "Wide Format"])
+                
+                if fmt.startswith("Long"):
                     cols = df.columns.tolist()
-                    c_grp = st.selectbox("Group Column", cols); c_val = st.selectbox("Value Column", [c for c in cols if c!=c_grp])
+                    c_grp = st.selectbox("Group Column", cols)
+                    c_val = st.selectbox("Value Column", [c for c in cols if c!=c_grp])
+                    
+                   
                     if st.button("Load Data"):
+                        temp_data = {}
                         for g in df[c_grp].unique():
                             v = df[df[c_grp]==g][c_val].dropna().tolist()
                             clean = [float(x) for x in v if str(x).replace('.','').isdigit()]
-                            if clean: data_dict[g] = clean
+                            if clean: temp_data[g] = clean
+                        st.session_state.csv_data_cache = temp_data # 保存
+                        
                 else:
                     num_cols = df.select_dtypes(include=[np.number]).columns
                     sel = st.multiselect("Select Columns", num_cols, default=list(num_cols)[:3])
+                    
+                   
                     if st.button("Load Data"):
+                        temp_data = {}
                         for c in sel:
                             v = df[c].dropna().tolist(); 
-                            if v: data_dict[c] = v
+                            if v: temp_data[c] = v
+                        st.session_state.csv_data_cache = temp_data 
+
+                
+                if st.session_state.csv_data_cache:
+                    st.success("Data loaded from CSV!")
+                    data_dict.update(st.session_state.csv_data_cache)
+                    
+                   
+                    if st.button("Clear CSV Data"):
+                        st.session_state.csv_data_cache = {}
+                        st.rerun()
+                        
             except Exception as e: st.error(str(e))
 
 # === 2-Factor Input ===
