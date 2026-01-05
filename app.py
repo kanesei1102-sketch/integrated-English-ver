@@ -11,7 +11,7 @@ from statsmodels.stats.multicomp import pairwise_tukeyhsd
 from statsmodels.graphics.factorplots import interaction_plot
 
 # ---------------------------------------------------------
-# Safe library import
+# Safe Import of Optional Libraries
 # ---------------------------------------------------------
 try:
     import scikit_posthocs as sp
@@ -20,19 +20,18 @@ except ImportError:
     HAS_POSTHOCS = False
 
 # ---------------------------------------------------------
-# 0. Page configuration
+# 0. Page Config
 # ---------------------------------------------------------
-st.set_page_config(page_title="Ultimate Sci-Stat V14 (Final Report)", layout="wide")
+st.set_page_config(page_title="Ultimate Sci-Stat V14 (EN)", layout="wide")
 
 # ---------------------------------------------------------
-# 1. Common functions (Logic)
+# 1. Common Logic Functions
 # ---------------------------------------------------------
 
 def parse_vals(text):
-    """Rigorous numerical conversion"""
     if not text: return []
-    # Replace commas with newlines to handle CSV-like text input
-    text = text.replace(',', '\n')
+    # Replace comma with newline and handle full-width numbers just in case
+    text = text.replace(',', '\n').translate(str.maketrans('０１２３４５６７８９', '0123456789'))
     vals = []
     for x in text.split('\n'):
         x = x.strip()
@@ -44,7 +43,6 @@ def parse_vals(text):
     return vals
 
 def clean_data_for_log(vals):
-    """Exclude values <= 0 for log axis"""
     arr = np.array(vals)
     positive = arr[arr > 0]
     if len(positive) < len(arr):
@@ -52,19 +50,16 @@ def clean_data_for_log(vals):
     return positive.tolist(), False
 
 def check_data_validity(values_list):
-    """N>=2 Check"""
     if not values_list: return False
     return all(len(v) >= 2 for v in values_list)
 
 def get_sig_label(p):
-    """Convert P-value to significance stars"""
     if p < 0.001: return "***"
     if p < 0.01: return "**"
     if p < 0.05: return "*"
     return "ns"
 
 def run_fallback_posthoc(groups_vals, group_names):
-    """Fallback logic if scikit-posthocs is missing (Bonferroni-MannWhitney)"""
     sig_pairs = []
     n_groups = len(groups_vals)
     n_pairs = (n_groups * (n_groups - 1)) / 2
@@ -74,7 +69,7 @@ def run_fallback_posthoc(groups_vals, group_names):
         for j in range(i+1, n_groups):
             try:
                 _, p = stats.mannwhitneyu(groups_vals[i], groups_vals[j], alternative='two-sided')
-                p_adj = p * n_pairs 
+                p_adj = p * n_pairs # Bonferroni correction
                 if p_adj < 0.05:
                     sig_pairs.append({'g1': group_names[i], 'g2': group_names[j], 'label': get_sig_label(p_adj)})
             except: pass
@@ -82,27 +77,29 @@ def run_fallback_posthoc(groups_vals, group_names):
 
 def auto_select_test(groups_vals):
     """
-    Automatic statistical test selection logic
-    Returns: p_val, method_name, is_parametric, detail_dict
+    Automatic Statistical Test Selection Logic
+    Returns: p_val, method_name, is_parametric, context_dict
     """
     context = {
         "small_n": False,
         "all_normal": True,
         "is_equal_var": True,
-        "posthoc": "None",
-        "reason": ""
+        "posthoc": "None"
     }
 
     if not check_data_validity(groups_vals):
         return 1.0, "Insufficient Data", False, context
 
+    # 1. Check Sample Size
     if any(len(v) < 3 for v in groups_vals):
         context["small_n"] = True
 
+    # 2. Check Normality (Shapiro-Wilk)
     for v in groups_vals:
         if len(v) >= 3:
             if stats.shapiro(v)[1] <= 0.05: context["all_normal"] = False
     
+    # 3. Check Homogeneity of Variance (Levene)
     try: _, p_lev = stats.levene(*groups_vals); context["is_equal_var"] = (p_lev > 0.05)
     except: context["is_equal_var"] = True
 
@@ -114,32 +111,26 @@ def auto_select_test(groups_vals):
         if context["all_normal"]:
             if context["is_equal_var"]:
                 method_name = "Student's t-test"
-                p_val = stats.ttest_ind(groups_vals[0], groups_vals[1], equal_var=True)[1]
-                context["reason"] = "Normal distribution and equal variance"
+                _, p_val = stats.ttest_ind(groups_vals[0], groups_vals[1], equal_var=True)
             else:
                 method_name = "Welch's t-test"
-                p_val = stats.ttest_ind(groups_vals[0], groups_vals[1], equal_var=False)[1]
-                context["reason"] = "Normal distribution but unequal variance"
+                _, p_val = stats.ttest_ind(groups_vals[0], groups_vals[1], equal_var=False)
         else:
             method_name = "Mann-Whitney U test"
-            p_val = stats.mannwhitneyu(groups_vals[0], groups_vals[1], alternative='two-sided')[1]
-            context["reason"] = "Non-normal distribution (or contains outliers)"
+            _, p_val = stats.mannwhitneyu(groups_vals[0], groups_vals[1], alternative='two-sided')
     else:
         if context["all_normal"] and context["is_equal_var"]:
             method_name = "One-way ANOVA"
             context["posthoc"] = "Tukey-Kramer test"
-            p_val = stats.f_oneway(*groups_vals)[1]
-            context["reason"] = "Normal distribution and equal variance"
+            _, p_val = stats.f_oneway(*groups_vals)
         else:
             method_name = "Kruskal-Wallis test"
             context["posthoc"] = "Dunn's test (Bonferroni)" if HAS_POSTHOCS else "Mann-Whitney U (Bonferroni)"
-            p_val = stats.kruskal(*groups_vals)[1]
-            context["reason"] = "Non-normal distribution (or unequal variance)"
+            _, p_val = stats.kruskal(*groups_vals)
 
     return p_val, method_name, context["all_normal"], context
 
 def calculate_sig_bars_layout(pairs, name_to_x, base_y_map, step_y, is_log):
-    """Tetris Algorithm for Stacking Significance Bars"""
     bars_to_draw = []
     levels = {}
 
@@ -177,7 +168,7 @@ def calculate_sig_bars_layout(pairs, name_to_x, base_y_map, step_y, is_log):
     return bars_to_draw
 
 # ---------------------------------------------------------
-# 2. Drawing functions (Matplotlib)
+# 2. Plotting Functions (Matplotlib)
 # ---------------------------------------------------------
 
 def draw_matplotlib_1factor(data_dict, sig_pairs, config, is_norm):
@@ -185,11 +176,15 @@ def draw_matplotlib_1factor(data_dict, sig_pairs, config, is_norm):
     group_names = list(data_dict.keys())
     all_values = list(data_dict.values())
     
-    fig_w = config['width'] if config['width'] > 0 else max(6.0, len(data_dict) * 1.5 * config['spacing'])
-    fig, ax = plt.subplots(figsize=(fig_w, config['height']))
-    
+    # X-axis positioning
     x_pos = np.arange(len(group_names)) * config['spacing']
     name_to_x = {name: x for name, x in zip(group_names, x_pos)}
+
+    # Figure Width adjustment
+    base_width_per_group = 3.0 
+    fig_w = max(6.0, len(data_dict) * base_width_per_group * config['spacing'])
+    
+    fig, ax = plt.subplots(figsize=(fig_w, config['height']))
     
     all_flat = [x for sub in all_values for x in sub]
     max_v = max(all_flat) if all_flat else 1
@@ -197,7 +192,9 @@ def draw_matplotlib_1factor(data_dict, sig_pairs, config, is_norm):
     min_pos_v = min(pos_vals) if pos_vals else 0.01
     
     base_y_map = {} 
-    final_type = config['manual_type'] if config['mode'].startswith("Manual") else ("Box plot" if not is_norm else "Bar graph")
+    
+    # Determine plot type based on logic
+    final_type = config['manual_type'] if config['mode'].startswith("Manual") else ("Box Plot" if not is_norm else "Bar Plot")
 
     for i, (name, vals) in enumerate(data_dict.items()):
         vals = np.array(vals); p = x_pos[i]
@@ -221,20 +218,23 @@ def draw_matplotlib_1factor(data_dict, sig_pairs, config, is_norm):
         margin_ratio = 1.05 if config['scale'].startswith("Linear") else 1.2
         base_y_map[name] = top_val * margin_ratio
         
+        # Draw Graphs
         if "Bar" in final_type:
             ax.bar(p, mean, width=config['bar_width'], color=col, edgecolor='black', alpha=0.8, zorder=1)
             if config['error'] != "None":
                 ax.errorbar(p, mean, yerr=err, fmt='none', c='black', capsize=5, zorder=2)
         elif "Box" in final_type and len(vals_plot)>0:
             ax.boxplot(vals_plot, positions=[p], widths=config['bar_width'], patch_artist=True, 
-                       boxprops=dict(facecolor=col, alpha=0.8), medianprops=dict(color='black'), showfliers=False)
+                       boxprops=dict(facecolor=col, alpha=0.8), medianprops=dict(color='black'), showfliers=False, zorder=1)
         elif "Violin" in final_type and len(vals_plot)>0:
             parts = ax.violinplot(vals_plot, positions=[p], widths=config['bar_width'], showextrema=False)
-            for pc in parts['bodies']: pc.set_facecolor(col); pc.set_alpha(0.8)
+            for pc in parts['bodies']: pc.set_facecolor(col); pc.set_alpha(0.8); pc.set_zorder(1)
             
+        # Jitter
         if len(vals_plot) > 0:
-            noise = np.random.normal(0, config['jitter'], len(vals_plot))
-            ax.scatter(p+noise, vals_plot, s=config['dot_size'], facecolors='white', edgecolors='#555555', zorder=3, alpha=config['dot_alpha'])
+            jitter_width = config['bar_width'] * 0.4 * config['jitter'] 
+            noise = np.random.uniform(-1, 1, len(vals_plot)) * jitter_width
+            ax.scatter(p + noise, vals_plot, s=config['dot_size'], facecolors='white', edgecolors='#555555', zorder=3, alpha=config['dot_alpha'])
 
     # Sig Bars
     step_y = max_v * 0.1
@@ -257,6 +257,11 @@ def draw_matplotlib_1factor(data_dict, sig_pairs, config, is_norm):
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     
+    # Fix X-axis limits
+    min_x = min(x_pos) - 1.0
+    max_x = max(x_pos) + 1.0
+    ax.set_xlim(min_x, max_x)
+    
     if config['manual_y_max'] > 0:
         ax.set_ylim(bottom=None, top=config['manual_y_max'])
     else:
@@ -273,13 +278,18 @@ def draw_matplotlib_2factor(df_raw, grouped_data, sig_res_map, config, sub_names
     plt.rcParams['font.family'] = 'sans-serif'
     n_major = len(grouped_data)
     n_sub = len(sub_names)
-    fig_w = config['width'] if config['width'] > 0 else max(6.0, n_major * n_sub * 0.8)
+    
+    x_base = np.arange(n_major) * config['spacing']
+    
+    base_width_per_major = max(4.0, n_sub * 1.5)
+    fig_w = max(6.0, n_major * base_width_per_major * config['spacing'])
+    
     fig, ax = plt.subplots(figsize=(fig_w, config['height']))
     
-    x_base = np.arange(n_major)
     w = config['bar_width']
-    total_group_width = w * n_sub * 1.1
-    offsets = np.linspace(-total_group_width/2 + w/2, total_group_width/2 - w/2, n_sub)
+    
+    total_group_width = w * n_sub * 1.2
+    offsets = np.linspace(-total_group_width/2 + w/2 + (w*0.1), total_group_width/2 - w/2 - (w*0.1), n_sub)
     
     all_raw = df_raw['Val'].tolist()
     max_v = max(all_raw) if all_raw else 1
@@ -323,11 +333,12 @@ def draw_matplotlib_2factor(df_raw, grouped_data, sig_res_map, config, sub_names
             for k, v in enumerate(raw_vals_list):
                 if len(v) > 0:
                     ax.boxplot(v, positions=[x_coords[k]], widths=w*0.8, patch_artist=True, 
-                               boxprops=dict(facecolor=col, alpha=0.8), medianprops=dict(color='black'), showfliers=False)
+                               boxprops=dict(facecolor=col, alpha=0.8), medianprops=dict(color='black'), showfliers=False, zorder=1)
 
         for k, v in enumerate(raw_vals_list):
             if len(v) > 0:
-                noise = np.random.normal(0, config['jitter']*0.05, len(v))
+                jitter_width = w * 0.4 * config['jitter']
+                noise = np.random.uniform(-1, 1, len(v)) * jitter_width
                 ax.scatter(x_coords[k] + noise, v, s=config['dot_size'], facecolors='white', edgecolors='#555555', zorder=3, alpha=config['dot_alpha'])
 
     global_max_y = max_v
@@ -363,6 +374,10 @@ def draw_matplotlib_2factor(df_raw, grouped_data, sig_res_map, config, sub_names
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     
+    min_x = min(x_base) - 0.8
+    max_x = max(x_base) + 0.8
+    ax.set_xlim(min_x, max_x)
+    
     if config['manual_y_max'] > 0:
         ax.set_ylim(bottom=None, top=config['manual_y_max'])
     else:
@@ -373,20 +388,20 @@ def draw_matplotlib_2factor(df_raw, grouped_data, sig_res_map, config, sub_names
     return fig
 
 # ---------------------------------------------------------
-# Sidebar Configuration (English)
+# 2. Sidebar Settings (English)
 # ---------------------------------------------------------
 with st.sidebar:
-    st.markdown("### [Notice: Usage in Publications]")
+    st.markdown("### [Important: Use in Publications]")
     st.warning("""
-    **Planning to publish these results?**
-    This tool is currently in beta. If you use results from this tool in academic papers or conferences, **please contact the developer (Kaneko) in advance.**
-    We will discuss options for **Co-authorship** or inclusion in the Acknowledgments based on the tool's contribution.
+    **Planning to publish research results?**
+    This tool is currently in beta. For academic use, **please contact the developer (Kaneko) in advance.**
+    We can discuss co-authorship or acknowledgments.
     👉 **[Contact Form](https://forms.gle/xgNscMi3KFfWcuZ1A)**
     """)
     st.divider()
 
     analysis_mode = st.radio("Analysis Mode", ["1-Factor (Simple Comparison)", "2-Factor (Two-way ANOVA)"], 
-                             help="1-Factor: A vs B vs C\n2-Factor: Interaction between Factor A and Factor B")
+                             help="1-Factor: A vs B vs C\n2-Factor: Factor A × Factor B")
     st.divider()
 
     st.header("🛠️ Graph Settings")
@@ -394,63 +409,64 @@ with st.sidebar:
         if analysis_mode.startswith("1-Factor"):
             graph_mode_ui = st.radio("Selection Mode", ["Auto (Recommended)", "Manual"])
             scale_option = st.radio("Y-axis Scale", ["Linear", "Log"])
-            auto_zoom = st.checkbox("Exclude outliers for zoom", value=False) if scale_option.startswith("Linear") else False
+            auto_zoom = st.checkbox("Exclude Outliers (Zoom)", value=False) if scale_option.startswith("Linear") else False
             
-            manual_graph_type = "Bar graph (Bar)"
+            manual_graph_type = "Bar Plot"
             error_type = "SD (Standard Deviation)"
             if graph_mode_ui.startswith("Manual"):
-                manual_graph_type = st.selectbox("Format", ["Bar graph (Bar)", "Box plot (Box)", "Violin plot (Violin)"])
+                manual_graph_type = st.selectbox("Type", ["Bar Plot", "Box Plot", "Violin Plot"])
                 if "Bar" in manual_graph_type:
                     error_type = st.radio("Error Bar", ["SD (Standard Deviation)", "SEM (Standard Error)"])
                 else: error_type = "None"
             else:
-                st.caption("* Type automatically selected based on distribution")
+                st.caption("※ Selected automatically based on distribution")
                 error_type = "SD (Standard Deviation)"
         else:
-            graph_type_2way = st.selectbox("Format", ["Bar graph (Bar)", "Box plot (Box)"])
+            graph_type_2way = st.selectbox("Type", ["Bar Plot", "Box Plot"])
             error_type = st.radio("Error Bar", ["SD (Standard Deviation)", "SEM (Standard Error)"]) if "Bar" in graph_type_2way else "None"
             scale_option = st.radio("Y-axis Scale", ["Linear", "Log"])
             graph_mode_ui = "Manual"; manual_graph_type = graph_type_2way; auto_zoom = False
 
-    with st.expander("🎨 Visual Refinements", expanded=False):
+    with st.expander("🎨 Design Tweaks", expanded=False):
         fig_title = st.text_input("Title", value="Experiment Result")
         y_axis_label = st.text_input("Y-axis Label", value="Relative Value")
         manual_y_max = st.number_input("Y-axis Max (0 for Auto)", value=0.0, step=1.0)
         st.divider()
-        manual_width = st.slider("Image Width (0 for Auto)", 0.0, 20.0, 0.0, 0.5)
-        fig_height = st.slider("Image Height", 3.0, 15.0, 6.0)
-        bar_width = st.slider("Bar/Box Width", 0.1, 1.0, 0.35, 0.05)
-        group_spacing = st.slider("Spacing", 0.5, 3.0, 1.0, 0.1) if analysis_mode.startswith("1-Factor") else 1.0
+        fig_height = st.slider("Figure Height", 3.0, 15.0, 6.0)
+        bar_width = st.slider("Bar Width", 0.1, 1.0, 0.35, 0.05)
         
-        st.caption("Dots & Others")
-        dot_size = st.slider("Dot Size", 0, 100, 20)
-        dot_alpha = st.slider("Dot Transparency", 0.1, 1.0, 0.7)
-        jitter = st.slider("Jitter (Spread)", 0.0, 1.0, 0.2)
+        label_spacing = "Group Spacing (1.0=Max)" if analysis_mode.startswith("1-Factor") else "Factor Spacing (1.0=Max)"
+        group_spacing = st.slider(label_spacing, 0.2, 1.0, 1.0, 0.05)
+        
+        st.caption("Dots & Misc")
+        dot_size = st.slider("Dot Size", 0, 20, 6)
+        dot_alpha = st.slider("Dot Opacity", 0.1, 1.0, 0.7)
+        jitter = st.slider("Jitter", 0.0, 1.0, 0.2)
 
 # ---------------------------------------------------------
-# 3. Main Area: Data Entry
+# 3. Main Area: Data Input
 # ---------------------------------------------------------
-st.title("🔬 Ultimate Sci-Stat & Graph Engine V14 (English)")
+st.title("🔬 Ultimate Sci-Stat & Graph Engine V14 (EN)")
 
 plot_config = {
     'mode': graph_mode_ui, 'manual_type': manual_graph_type, 'scale': scale_option,
     'error': error_type, 'auto_zoom': auto_zoom, 'title': fig_title, 'ylabel': y_axis_label,
-    'width': manual_width, 'height': fig_height, 'bar_width': bar_width, 'spacing': group_spacing,
+    'width': 0, 'height': fig_height, 'bar_width': bar_width, 'spacing': group_spacing,
     'dot_size': dot_size, 'dot_alpha': dot_alpha, 'jitter': jitter, 'colors': {}, 'manual_y_max': manual_y_max
 }
 
 data_dict = {}
 grouped_data = {}
 
-# === 1-Factor Entry ===
+# === 1-Factor Input ===
 if analysis_mode.startswith("1-Factor"):
-    st.caption("Compares multiple groups under a single condition")
-    t1, t2 = st.tabs(["✍️ Manual Entry", "📂 CSV Upload"])
+    st.caption("Compare multiple groups under a single condition.")
+    t1, t2 = st.tabs(["✍️ Manual Input", "📂 CSV Upload"])
     with t1:
         if 'g_cnt' not in st.session_state: st.session_state.g_cnt = 3
         c1, c2 = st.columns([1,5])
-        if c1.button("+ Group"): st.session_state.g_cnt += 1
-        if c2.button("- Group"): st.session_state.g_cnt = max(2, st.session_state.g_cnt - 1)
+        if c1.button("＋"): st.session_state.g_cnt += 1
+        if c2.button("－"): st.session_state.g_cnt = max(2, st.session_state.g_cnt - 1)
         cols = st.columns(min(st.session_state.g_cnt, 4))
         for i in range(st.session_state.g_cnt):
             with cols[i%4]:
@@ -464,9 +480,9 @@ if analysis_mode.startswith("1-Factor"):
             try:
                 df = pd.read_csv(up)
                 st.write("Preview:", df.head(3))
-                if st.radio("Format", ["Tidy (Group col + Value col)", "Wide (Each col is a group)"]).startswith("Tidy"):
+                if st.radio("Format", ["Long Format", "Wide Format"]).startswith("Long"):
                     cols = df.columns.tolist()
-                    c_grp = st.selectbox("Group Col", cols); c_val = st.selectbox("Value Col", [c for c in cols if c!=c_grp])
+                    c_grp = st.selectbox("Group Column", cols); c_val = st.selectbox("Value Column", [c for c in cols if c!=c_grp])
                     if st.button("Load Data"):
                         for g in df[c_grp].unique():
                             v = df[df[c_grp]==g][c_val].dropna().tolist()
@@ -481,21 +497,21 @@ if analysis_mode.startswith("1-Factor"):
                             if v: data_dict[c] = v
             except Exception as e: st.error(str(e))
 
-# === 2-Factor Entry ===
+# === 2-Factor Input ===
 else:
-    st.caption("Analyzes Interaction (Factor A × Factor B)")
+    st.caption("2-Factor Interaction Analysis (Factor A × Factor B)")
     c1, c2 = st.columns(2)
     with c1:
-        mj_str = st.text_area("Factor A (X-axis labels) *Newline separated", "DMSO\nDrug_X\nDrug_Y", height=100)
+        mj_str = st.text_area("Factor A (X-axis) *Line-separated", "DMSO\nDrug_X\nDrug_Y", height=100)
         mj_grps = [x.strip() for x in mj_str.split('\n') if x.strip()]
     with c2:
         if 'sub_cnt' not in st.session_state: st.session_state.sub_cnt = 2
         sc1, sc2 = st.columns(2)
-        if sc1.button("+ Subgroup"): st.session_state.sub_cnt += 1
-        if sc2.button("- Subgroup"): st.session_state.sub_cnt = max(2, st.session_state.sub_cnt - 1)
+        if sc1.button("＋Sub Group"): st.session_state.sub_cnt += 1
+        if sc2.button("－Remove"): st.session_state.sub_cnt = max(2, st.session_state.sub_cnt - 1)
         sub_names = []
         for i in range(st.session_state.sub_cnt):
-            sub_names.append(st.text_input(f"Subgroup {i+1}", f"Sub {i+1}", key=f"s{i}"))
+            sub_names.append(st.text_input(f"Sub {i+1}", f"Sub {i+1}", key=f"s{i}"))
     st.divider()
     if mj_grps and sub_names:
         tabs = st.tabs(mj_grps)
@@ -510,10 +526,10 @@ else:
                         if v: grouped_data[m][s] = v
 
 # ---------------------------------------------------------
-# 4. Color Configuration
+# 4. Color Settings
 # ---------------------------------------------------------
 with st.sidebar:
-    with st.expander("🖍️ Color Palette", expanded=True):
+    with st.expander("🖍️ Color Settings", expanded=True):
         defs = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3"]
         if analysis_mode.startswith("1-Factor") and data_dict:
             for i, k in enumerate(data_dict.keys()):
@@ -523,7 +539,7 @@ with st.sidebar:
                 plot_config['colors'][k] = st.color_picker(k, defs[i%len(defs)])
 
 # ---------------------------------------------------------
-# 5. Execution (Report & Drawing)
+# 5. Execution (Report & Draw)
 # ---------------------------------------------------------
 if analysis_mode.startswith("1-Factor"):
     if len(data_dict) >= 2 and check_data_validity(data_dict.values()):
@@ -534,61 +550,61 @@ if analysis_mode.startswith("1-Factor"):
         # --- Report Logic ---
         easy_reason = ""
         if ctx["all_normal"] and ctx["is_equal_var"]:
-            easy_reason = "No significant distortion was detected in the distribution, and homogeneity of variance was not rejected. Therefore, a parametric test—the standard and most powerful approach—was selected."
+            easy_reason = "Since no significant deviation in data distribution was detected and homogeneity of variance was not rejected, the standard 'Parametric Test' (highest statistical power) was selected."
         elif not ctx["all_normal"]:
-            easy_reason = "Distortions in the distribution (non-normality) or outliers were suggested. Therefore, a non-parametric test based on ranks was selected."
+            easy_reason = "Since non-normality or potential outliers were suggested in the data distribution, a rank-based 'Non-Parametric Test' was selected."
         else:
-            easy_reason = "Normality was not rejected, but the homogeneity of variance was rejected. Therefore, a method robust to unequal variances was selected."
+            easy_reason = "Normality was not rejected, but homogeneity of variance was rejected. Therefore, a method robust to unequal variances was selected."
 
         if ctx["small_n"]:
-            easy_reason += "\n   * Note: Some groups have a small sample size, which limits the rigor of the distribution assessment."
+            easy_reason += "\n   *Note: Due to small sample size in some groups, exact distribution assessment is limited."
 
-        result_summary = "[Statistically Significant]" if p_val < 0.05 else "[Not Statistically Significant]"
-        conclusion_text = "Significant differences were observed between groups, suggesting that mean (or representative) values differ for at least some group pairs." if p_val < 0.05 else "No significant differences were observed between groups; mean values did not show clear differences."
+        result_summary = "【Significant Difference Detected】" if p_val < 0.05 else "【No Significant Difference】"
+        conclusion_text = "Statistically significant differences were observed between groups in this dataset, suggesting a difference in means (or medians) between at least some groups." if p_val < 0.05 else "No statistically significant differences were observed between groups in this dataset; clear differences in means could not be determined."
 
-        norm_res_text = "Not Rejected (Normal distribution assumed)" if ctx["all_normal"] else "Rejected (Non-normality suggested)"
-        if ctx["small_n"]: norm_res_text += " *Reference value only (n<3)"
-        var_res_text = "Not Rejected (Equal variance assumed)" if ctx["is_equal_var"] else "Rejected (Unequal variance suggested)"
+        norm_res_text = "No significant deviation (Not Rejected)" if ctx["all_normal"] else "Non-normality suggested (Rejected)"
+        if ctx["small_n"]: norm_res_text += " *Ref only (n<3)"
+        var_res_text = "Homogeneity not rejected (Not Rejected)" if ctx["is_equal_var"] else "Homogeneity rejected (Rejected)"
 
         analysis_path = f"""
-[Statistical Selection Process (Automatic Diagnosis)]
+【Statistical Method Selection Process (Automatic Diagnosis)】
 1. Normality Test (Shapiro-Wilk): {norm_res_text}
 2. Homogeneity of Variance (Levene): {var_res_text}
-=> Based on the above, **{method}** was employed.
+⇒ Based on the above diagnosis, **{method}** was adopted.
 """
         
-        with st.expander("📝 Detailed Analysis Report", expanded=True):
+        with st.expander("📝 Ready-to-Use Report (Details)", expanded=True):
             full_report = f"""
-[Analysis Report: Comparison of {", ".join(data_dict.keys())}]{analysis_path}
+【Analysis Report: Comparison of {", ".join(data_dict.keys())}】{analysis_path}
 
-1. Rationale for Selection:
+1. Rationale for Test Selection:
    Method: {method}
    Reason: {easy_reason}
 
-2. Results:
-   Determination: {result_summary}
-   Global P-value: {p_val:.4e}
-   (Threshold: α=0.05)
+2. Analysis Results:
+   Verdict: {result_summary}
+   Overall P-value: {p_val:.4e}
+   (Significance level α=0.05)
 
 3. Post-hoc Results:
-   {"Pairwise comparisons were performed, and significant differences are reflected in the graph." if len(data_dict) > 2 else "A direct comparison between the two groups was performed."}
+   {"Pairwise tests were conducted, and significance is reflected in the graph." if len(data_dict) > 2 else "Direct comparison between two groups was conducted."}
 
 4. Conclusion:
    {conclusion_text}
             """
             st.text_area("Full Report", value=full_report, height=400)
             
-        with st.expander("📄 Methods for Publication", expanded=False):
+        with st.expander("📄 'Methods' Section Draft (for Papers)", expanded=False):
             methods_text = f"""
-Statistical analyses were performed using Python (SciPy and statsmodels libraries). 
-Normality and homogeneity of variance were assessed using Shapiro-Wilk and Levene's tests, respectively. 
-Comparisons were performed using {method}. 
-(If applicable, {ctx['posthoc']} was used for post-hoc pairwise comparisons). 
-A p-value < 0.05 was considered statistically significant.
+Statistical analyses were performed using Python with the SciPy library.
+Normality of data was assessed using the Shapiro-Wilk test, and homogeneity of variance was assessed using Levene's test.
+Comparisons between groups were determined using {method}.
+{f"(Post-hoc analysis: {ctx['posthoc']})" if len(data_dict) > 2 else ""}
+A P-value of less than 0.05 was considered statistically significant.
             """
-            st.text_area("Methods Proposal", value=methods_text, height=150)
+            st.text_area("Methods Draft", value=methods_text, height=150)
 
-        # Post-hoc
+        # Posthoc
         sig_pairs = []
         grps = list(data_dict.keys()); vals = list(data_dict.values())
         if p_val < 0.05:
@@ -608,7 +624,7 @@ A p-value < 0.05 was considered statistically significant.
                         if dunn.iloc[i, j] < 0.05:
                             sig_pairs.append({'g1': grps[i], 'g2': grps[j], 'label': get_sig_label(dunn.iloc[i, j])})
             else:
-                st.warning("scikit-posthocs not found. Executing fallback (Bonferroni-MannWhitney).")
+                st.warning("scikit-posthocs not installed. Running fallback logic (Bonferroni-MannWhitney).")
                 sig_pairs = run_fallback_posthoc(vals, grps)
         
         # Draw (Matplotlib)
@@ -617,8 +633,8 @@ A p-value < 0.05 was considered statistically significant.
             st.pyplot(fig)
             buf = io.BytesIO(); fig.savefig(buf, format='png', bbox_inches='tight', dpi=300)
             st.download_button("📥 Save Image (PNG)", buf, file_name="result.png", mime="image/png")
-        except Exception as e: st.error(f"Drawing Error: {e}")
-    else: st.info("Please enter data (N>=2 for each group)")
+        except Exception as e: st.error(f"Plot Error: {e}")
+    else: st.info("Please input data.")
 
 else: # 2-Factor
     if len(grouped_data) > 0:
@@ -636,11 +652,11 @@ else: # 2-Factor
                 p_int = res.loc['C(A):C(B)', 'PR(>F)']
                 with st.expander("📊 ANOVA Table", expanded=False):
                     st.write(res)
-                    st.info(f"Interaction: **{'Significant' if p_int < 0.05 else 'Not Significant'}** (P={p_int:.4f})")
+                    st.info(f"Interaction: **{'Yes' if p_int < 0.05 else 'No'}** (P={p_int:.4f})")
                     fig_i, ax_i = plt.subplots()
                     interaction_plot(x=df_a['A'], trace=df_a['B'], response=df_a['Val'], ax=ax_i)
                     st.pyplot(fig_i)
-            except: st.warning("Unable to compute ANOVA")
+            except: st.warning("ANOVA calculation failed.")
 
             st.subheader("Simple Main Effects (Stratified Analysis)")
             sig_res_map = {}
@@ -650,8 +666,8 @@ else: # 2-Factor
                 s_keys = list(sub.keys()); s_vals = list(sub.values())
                 if not check_data_validity(s_vals): continue
                 
-                p, method, _, detail = auto_select_test(s_vals)
-                report_text += f"- **{m}**: P={p:.4f} ({method}, Post-hoc: {detail['posthoc']})\n"
+                p, method, _, _ = auto_select_test(s_vals)
+                report_text += f"- **{m}**: P={p:.4f} ({method})\n"
                 
                 sig_res_map[m] = []
                 if p < 0.05:
@@ -682,18 +698,18 @@ else: # 2-Factor
                 st.pyplot(fig)
                 buf = io.BytesIO(); fig.savefig(buf, format='png', bbox_inches='tight', dpi=300)
                 st.download_button("📥 Save Image (PNG)", buf, file_name="result_2way.png", mime="image/png")
-            except Exception as e: st.error(f"Drawing Error: {e}")
-    else: st.info("Please enter data")
+            except Exception as e: st.error(f"Plot Error: {e}")
+    else: st.info("Please input data.")
 
 # ---------------------------------------------------------
-# Sidebar Footer: Disclaimer (Professional English)
+# 6. Sidebar Footer: Disclaimer (English)
 # ---------------------------------------------------------
 with st.sidebar:
     st.divider()
     st.caption("【Disclaimer】")
     st.caption("""
-    This software is provided as a research tool on an 'AS IS' basis. 
-    The developer makes no warranties regarding the accuracy, completeness, or fitness for a particular purpose of the results generated. 
-    The developer shall not be liable for any damages (including loss of research data, paper retractions, or loss of opportunity) arising from the use of this tool. 
-    Final judgment on statistical validity must be made by the user.
+    This software is provided "as is" for research purposes.
+    The developer makes no warranties regarding the accuracy, completeness, or fitness for a particular purpose of the calculation results.
+    The developer shall not be liable for any damages (including loss of research data, correction/retraction of papers, loss of opportunity, etc.) arising from the use of this tool.
+    Final judgment of statistical validity is the sole responsibility of the user.
     """)
